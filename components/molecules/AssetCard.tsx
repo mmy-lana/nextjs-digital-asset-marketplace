@@ -170,7 +170,7 @@ export function AssetCard({
             <Link
               href={`/asset/${asset.slug}`}
               data-testid="asset-detail-link"
-              className="transition-colors hover:text-cyan-300 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-400"
+              className="inline-flex min-h-[44px] items-center transition-colors hover:text-cyan-300 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-400"
             >
               {truncate(asset.title, 44)}
             </Link>

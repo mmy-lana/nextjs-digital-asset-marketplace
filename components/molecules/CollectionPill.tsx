@@ -61,7 +61,7 @@ export function CollectionPill({
       href={`/collections/${collection.slug}`}
       data-testid="collection-pill"
       className={
-        'group flex items-center gap-3 rounded-glass border border-white/10 bg-slate-950/70 p-3 backdrop-blur-xl transition-colors hover:border-cyan-400/40 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-400 ' +
+        'group flex min-h-[44px] items-center gap-3 rounded-glass border border-white/10 bg-slate-950/70 p-3 backdrop-blur-xl transition-colors hover:border-cyan-400/40 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-400 ' +
         (className ?? '')
       }
       {...rest}

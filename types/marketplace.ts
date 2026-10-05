@@ -37,7 +37,9 @@ export interface AssetTrait {
 }
 
 export interface MediaPayload {
+  /** Always a renderable image poster. Never an audio stream. */
   previewUrl: string;
+  /** Always a renderable image source. Never an audio stream. */
   highResUrl: string;
   thumbnailUrl: string;
   mimeType: string;
@@ -48,6 +50,15 @@ export interface MediaPayload {
   };
   durationSeconds?: number;
   modelFormat?: 'gltf' | 'glb' | 'obj' | 'fbx';
+  /**
+   * RUN-01: decoupled audio stream endpoint.
+   *
+   * Audio used to be written into `previewUrl`, so `<Image>` handed an
+   * `audio/mpeg` URL to the image optimizer. That produced upstream MIME-type
+   * mismatches, hard crashes and multi-second optimizer timeouts. The visual
+   * fields now always carry a real image and audio players read this field.
+   */
+  audioUrl?: string;
 }
 
 export interface DigitalAsset {

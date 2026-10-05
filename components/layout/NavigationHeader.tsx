@@ -220,7 +220,9 @@ export function NavigationHeader({ assets, onCartOpen, className, ...rest }: Nav
                     className="size-1.5 rounded-full"
                     style={{ backgroundColor: chain.accentClass.includes('violet') ? '#e879f9' : chain.accentClass.includes('emerald') ? '#34d399' : chain.accentClass.includes('sky') ? '#38bdf8' : '#a78bfa' }}
                   />
-                  {wallet.isConnected ? formatCryptoNumber(wallet.balanceEth) : chain.label}
+                  <span data-testid="wallet-balance">
+                    {wallet.isConnected ? formatCryptoNumber(wallet.balanceEth) : chain.label}
+                  </span>
                 </span>
               </span>
             </button>

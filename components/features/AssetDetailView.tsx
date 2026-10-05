@@ -56,7 +56,8 @@ export function AssetDetailView({ asset, className }: AssetDetailViewProps) {
         <div className="flex flex-col gap-4">
           {asset.category === 'audio_tracks' ? (
             <AudioPreviewPlayer
-              src={asset.media.previewUrl}
+              src={asset.media.audioUrl ?? asset.media.previewUrl}
+              posterUrl={asset.media.previewUrl}
               durationSeconds={asset.media.durationSeconds}
               title={asset.title}
             />

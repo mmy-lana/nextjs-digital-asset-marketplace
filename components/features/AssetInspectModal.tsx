@@ -124,7 +124,8 @@ export function AssetInspectModal({
           <div className="flex flex-col gap-3">
             {showAudio ? (
               <AudioPreviewPlayer
-                src={asset.media.previewUrl}
+                src={asset.media.audioUrl ?? asset.media.previewUrl}
+                posterUrl={asset.media.previewUrl}
                 durationSeconds={asset.media.durationSeconds}
                 title={asset.title}
               />

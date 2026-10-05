@@ -5,7 +5,13 @@ import { AlertTriangle, Loader2, Pause, Play, Volume2, VolumeX } from 'lucide-re
 import { formatDuration, seededRandom, cn } from '@/lib/utils';
 
 export interface AudioPreviewPlayerProps {
+  /**
+   * Audio stream URL. Callers should pass `asset.media.audioUrl` and fall back to
+   * `asset.media.previewUrl` when the listing carries no dedicated stream.
+   */
   src: string;
+  /** Poster artwork shown while the stream buffers; omitted renders a gradient. */
+  posterUrl?: string;
   /** Total length in seconds, used for the readout before metadata loads. */
   durationSeconds?: number;
   title?: string;
@@ -23,6 +29,7 @@ const BAR_COUNT = 48;
  */
 export function AudioPreviewPlayer({
   src,
+  posterUrl,
   durationSeconds,
   title,
   className,
@@ -120,6 +127,14 @@ export function AudioPreviewPlayer({
       data-testid="audio-preview-player"
       {...rest}
     >
+      {posterUrl ? (
+        <div
+          aria-hidden="true"
+          className="h-28 w-full overflow-hidden rounded-lg border border-white/10 bg-slate-900 bg-cover bg-center sm:h-36"
+          style={{ backgroundImage: `url(${posterUrl})` }}
+        />
+      ) : null}
+
       <audio
         ref={audioRef}
         src={src}

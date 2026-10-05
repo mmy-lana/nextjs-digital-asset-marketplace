@@ -194,18 +194,20 @@ interface AssetSeed {
 }
 
 function buildMedia(seed: AssetSeed): MediaPayload {
-  const audioSource =
-    seed.audioSongNumber === undefined ? null : sampleAudio(seed.audioSongNumber);
-
   return {
-    previewUrl: audioSource ?? unsplash(seed.photoId, 900),
-    highResUrl: audioSource ?? unsplash(seed.photoId, 1920, 90),
+    // RUN-01: the visual fields always carry a real image poster, even for
+    // audio listings. The stream lives in `audioUrl`.
+    previewUrl: unsplash(seed.photoId, 900),
+    highResUrl: unsplash(seed.photoId, 1920, 90),
     thumbnailUrl: unsplash(seed.photoId, 480),
     mimeType: seed.mimeType,
     fileSizeBytes: seed.fileSizeBytes,
     ...(seed.dimensions ? { dimensions: seed.dimensions } : {}),
     ...(seed.durationSeconds === undefined ? {} : { durationSeconds: seed.durationSeconds }),
     ...(seed.modelFormat ? { modelFormat: seed.modelFormat } : {}),
+    ...(seed.audioSongNumber === undefined
+      ? {}
+      : { audioUrl: sampleAudio(seed.audioSongNumber) }),
   };
 }
 

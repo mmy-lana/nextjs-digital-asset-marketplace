@@ -6,6 +6,7 @@ import { GlassButton } from '@/components/ui/GlassButton';
 import { CHECKOUT_STEPS, CHECKOUT_STEP_DELAY_MS, PLATFORM_FEE_RATE } from '@/lib/constants';
 import { useCart } from '@/context/CartContext';
 import { useWallet } from '@/context/WalletContext';
+import type { SettlementLineInput } from '@/context/WalletContext';
 import { cn, formatCryptoNumber, formatDateTime, formatFiat } from '@/lib/utils';
 import type { CheckoutStepId, TransactionRecord } from '@/types/marketplace';
 
@@ -27,21 +28,13 @@ export interface CheckoutProcessorProps {
   'data-testid'?: string;
 }
 
-const STAGE_TO_STEP: Record<CheckoutStage, CheckoutStepId> = {
-  idle: 'review',
-  review: 'review',
-  processing: 'authorization',
-  confirmed: 'confirmation',
-  failed: 'confirmation',
-  cancelled: 'confirmation',
-};
-
 /**
  * Step-by-step checkout state machine.
  *
  * Drives `review -> authorization -> gas_estimate -> signing -> broadcast ->
- * confirmation`, then settles the wallet balance and appends a
- * `TransactionRecord` for each cart line. Cancel is honoured at any step.
+ * confirmation`, then settles the order through the atomic batch API so the
+ * wallet is debited exactly `subtotal + platform fee + gas` in a single write.
+ * Cancel is honoured at any step and a failed settlement leaves state untouched.
  */
 export function CheckoutProcessor({
   isActive,
@@ -51,12 +44,13 @@ export function CheckoutProcessor({
   ...rest
 }: CheckoutProcessorProps) {
   const { cart, clearCart } = useCart();
-  const { wallet, recordPurchase } = useWallet();
+  const { wallet, recordOrderSettlement } = useWallet();
 
   const [stage, setStage] = useState<CheckoutStage>('idle');
   const [currentStep, setCurrentStep] = useState<CheckoutStepId>('review');
   const [failureReason, setFailureReason] = useState<string | null>(null);
   const [settledRecords, setSettledRecords] = useState<TransactionRecord[]>([]);
+  const [chargeSummary, setChargeSummary] = useState<string | null>(null);
   const cancelledRef = useRef(false);
   const runningRef = useRef(false);
 
@@ -69,33 +63,69 @@ export function CheckoutProcessor({
       setCurrentStep('review');
       setFailureReason(null);
       setSettledRecords([]);
+      setChargeSummary(null);
     }
   }, [isActive]);
 
   const steps = CHECKOUT_STEPS;
   const activeStepIndex = steps.findIndex((step) => step.id === currentStep);
 
+  /**
+   * FIN-01: one atomic call settles every line. `totalRequiredCrypto` is the
+   * cart total (subtotal + platform fee + gas) so the wallet is never debited
+   * by a stale per-line amount and the fee is never omitted.
+   */
   const settle = useCallback(async () => {
-    const records: TransactionRecord[] = [];
-    for (const item of cart.items) {
-      // eslint-disable-next-line no-await-in-loop -- settlement is intentionally sequential per line
-      const record = await recordPurchase({
+    const snapshot = cart;
+
+    if (!wallet.isConnected) {
+      setFailureReason('Wallet disconnected before settlement could complete.');
+      setStage('failed');
+      return;
+    }
+
+    const lines: SettlementLineInput[] = snapshot.items.map((item) => {
+      const units = item.selectedLicense === 'exclusive_nft' ? 1 : item.quantity;
+      return {
         assetId: item.assetId,
         assetTitle: item.asset.title,
         assetThumbnail: item.asset.media.thumbnailUrl,
-        amountCrypto: Number((item.priceCrypto * (item.selectedLicense === 'exclusive_nft' ? 1 : item.quantity)).toFixed(6)),
-        amountFiatUsd: Number((item.priceFiatUsd * (item.selectedLicense === 'exclusive_nft' ? 1 : item.quantity)).toFixed(2)),
+        amountCrypto: Number((item.priceCrypto * units).toFixed(6)),
+        amountFiatUsd: Number((item.priceFiatUsd * units).toFixed(2)),
         chain: wallet.chain,
-        currency: 'ETH',
+        currency: 'ETH' as const,
         sellerAddress: item.asset.creator.walletAddress,
+      };
+    });
+
+    try {
+      const result = await recordOrderSettlement({
+        lines,
+        totalRequiredCrypto: snapshot.totalCrypto,
+        platformFeeCrypto: snapshot.platformFeeEth,
+        gasFeeCrypto: snapshot.estimatedGasFeeEth,
       });
-      records.push(record);
+
+      setSettledRecords(result.records);
+      setChargeSummary(
+        `${formatCryptoNumber(result.chargedCrypto)} ETH (balance ${formatCryptoNumber(
+          result.balanceBeforeEth
+        )} -> ${formatCryptoNumber(result.balanceAfterEth)})`
+      );
+      setFailureReason(null);
+      setStage('confirmed');
+      onSettled?.(result.records);
+      clearCart();
+    } catch (settlementError) {
+      // The atomic update rolled back, so the cart and wallet are both intact.
+      const message =
+        settlementError instanceof Error
+          ? settlementError.message
+          : 'Settlement failed for an unknown reason.';
+      setFailureReason(message);
+      setStage('failed');
     }
-    setSettledRecords(records);
-    setStage('confirmed');
-    onSettled?.(records);
-    clearCart();
-  }, [cart.items, clearCart, onSettled, recordPurchase, wallet.chain]);
+  }, [cart, clearCart, onSettled, recordOrderSettlement, wallet.chain, wallet.isConnected]);
 
   const run = useCallback(async () => {
     if (runningRef.current || cart.items.length === 0) return;
@@ -291,10 +321,20 @@ export function CheckoutProcessor({
       </div>
 
       {settledRecords.length > 0 ? (
-        <p className="text-center text-[11px] text-slate-600">
-          Recorded {settledRecords.length} transaction{settledRecords.length === 1 ? '' : 's'} at{' '}
-          {formatDateTime(settledRecords[0].timestamp)}
-        </p>
+        <div
+          className="flex flex-col gap-1 text-center text-[11px] text-slate-600"
+          data-testid="settlement-summary"
+        >
+          <p>
+            Recorded {settledRecords.length} transaction
+            {settledRecords.length === 1 ? '' : 's'} at {formatDateTime(settledRecords[0].timestamp)}
+          </p>
+          {chargeSummary ? (
+            <p className="font-mono" data-testid="settlement-charge">
+              Charged {chargeSummary}
+            </p>
+          ) : null}
+        </div>
       ) : null}
     </div>
   );

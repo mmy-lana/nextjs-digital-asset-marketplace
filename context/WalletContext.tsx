@@ -49,21 +49,72 @@ export interface WalletContextValue {
   disconnectWallet: () => void;
   switchChain: (chain: ChainNetwork) => Promise<boolean>;
   clearError: () => void;
-  /** Settles a purchase: deducts the balance and appends a transaction record. */
-  recordPurchase: (input: RecordPurchaseInput) => Promise<TransactionRecord>;
+  /**
+   * DATA-01 / FIN-01: atomic batch settlement.
+   *
+   * Deducts the full order total (subtotal + platform fee + gas) in a single
+   * functional state update, so concurrent settlements can never read a stale
+   * balance and overwrite one another's deductions.
+   *
+   * Throws `InsufficientFundsError` without mutating any state when the
+   * connected balance cannot cover the order.
+   */
+  recordOrderSettlement: (
+    input: RecordOrderSettlementInput
+  ) => Promise<RecordOrderSettlementResult>;
   resetHistory: () => void;
 }
 
-export interface RecordPurchaseInput {
+/** A single line inside a batched settlement. */
+export interface SettlementLineInput {
   assetId: string;
   assetTitle: string;
   assetThumbnail: string;
+  /** Line price in ETH before fees. */
   amountCrypto: number;
+  /** Line price in fiat before fees. */
   amountFiatUsd: number;
   chain: ChainNetwork;
   currency: TransactionRecord['currency'];
   sellerAddress: string;
   gasUsedGwei?: number;
+}
+
+export interface RecordOrderSettlementInput {
+  lines: SettlementLineInput[];
+  /**
+   * Exact charge in ETH: subtotal + platform fee + gas. This is the value that
+   * is deducted, so the ledger and the wallet balance cannot disagree.
+   */
+  totalRequiredCrypto: number;
+  /** Platform fee component of `totalRequiredCrypto`, recorded for audit. */
+  platformFeeCrypto?: number;
+  /** Gas component of `totalRequiredCrypto`, recorded for audit. */
+  gasFeeCrypto?: number;
+}
+
+export interface RecordOrderSettlementResult {
+  records: TransactionRecord[];
+  balanceBeforeEth: number;
+  balanceAfterEth: number;
+  chargedCrypto: number;
+}
+
+/** Raised when the connected balance cannot cover an order. */
+export class InsufficientFundsError extends Error {
+  readonly required: number;
+  readonly available: number;
+
+  constructor(required: number, available: number) {
+    super(
+      `Insufficient funds: ${required.toFixed(6)} ETH required but only ${available.toFixed(
+        6
+      )} ETH available.`
+    );
+    this.name = 'InsufficientFundsError';
+    this.required = required;
+    this.available = available;
+  }
 }
 
 const INITIAL_WALLET: WalletState = {
@@ -78,6 +129,12 @@ const INITIAL_WALLET: WalletState = {
 };
 
 const WalletContext = createContext<WalletContextValue | undefined>(undefined);
+
+/** Canonical zero address used when no buyer identity is bound to the order. */
+const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
+
+/** Simulated block-inclusion delay applied before a batch settlement commits. */
+const SETTLEMENT_BROADCAST_DELAY_MS = 260;
 
 /** Deterministic pseudo-hex for simulated transaction hashes. */
 function makeTxHash(seed: string): string {
@@ -108,12 +165,39 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
   /** Counts connection handshakes so failure seeding stays deterministic. */
   const attemptsRef = useRef(0);
 
+  /**
+   * DATA-01: the single synchronous source of truth for wallet state.
+   *
+   * React state updaters are NOT guaranteed to execute synchronously, so they
+   * cannot be used to drive control flow or read an authoritative balance.
+   * Every mutation therefore goes through {@link commitWallet}, which performs a
+   * synchronous read-modify-write against this ref and then mirrors the result
+   * into React state. Because there is no `await` between the read and the
+   * write, concurrent settlements cannot interleave.
+   */
+  const walletRef = useRef<WalletState>(INITIAL_WALLET);
+
+  /**
+   * Applies a synchronous read-modify-write to the authoritative wallet and
+   * returns the committed state. Purely synchronous by construction.
+   */
+  const commitWallet = useCallback((resolve: (current: WalletState) => WalletState): WalletState => {
+    const current = walletRef.current;
+    const next = resolve(current);
+    walletRef.current = next;
+    if (hydrated.current) setStorageItem(STORAGE_KEYS.wallet, next);
+    setWallet(next);
+    return next;
+  }, []);
+
   // Hydration: every storage read happens inside an effect so the server render
   // never touches browser APIs.
   useEffect(() => {
     const storedWallet = getStorageItem<WalletState | null>(STORAGE_KEYS.wallet, null);
     if (storedWallet && typeof storedWallet.address === 'string') {
-      setWallet({ ...INITIAL_WALLET, ...storedWallet });
+      const restored: WalletState = { ...INITIAL_WALLET, ...storedWallet };
+      walletRef.current = restored;
+      setWallet(restored);
       setActiveProvider(
         getStorageItem<WalletProviderKind | null>(STORAGE_KEYS.walletProviderKind, null)
       );
@@ -131,24 +215,13 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     hydrated.current = true;
   }, []);
 
-  const persistWallet = useCallback(
-    (next: WalletState | ((current: WalletState) => WalletState)) => {
-      setWallet((current) => {
-        const resolved = typeof next === 'function' ? next(current) : next;
-        if (hydrated.current) setStorageItem(STORAGE_KEYS.wallet, resolved);
-        return resolved;
-      });
-    },
-    []
-  );
-
   const connectWallet = useCallback(
     async (provider: WalletProviderKind = 'metamask'): Promise<boolean> => {
       const descriptor = getWalletProvider(provider);
       setError(null);
       setActiveProvider(provider);
       setStatus('CONNECTING');
-      persistWallet((current) => ({ ...current, isConnecting: true }));
+      commitWallet((current) => ({ ...current, isConnecting: true }));
 
       await delay(CONNECT_HANDSHAKE_DELAY_MS);
 
@@ -162,7 +235,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
         setError(
           `${descriptor.name} rejected the connection request. Check the extension and try again.`
         );
-        persistWallet((current) => ({
+        commitWallet((current) => ({
           ...current,
           isConnecting: false,
           isConnected: false,
@@ -170,7 +243,8 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
         return false;
       }
 
-      const next: WalletState = {
+      commitWallet((current) => ({
+        ...current,
         address: profile.address,
         ensName: profile.ensName,
         chainId: CHAIN_ID_MAP[descriptor.supportedChains[0]],
@@ -179,24 +253,22 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
         chain: descriptor.supportedChains[0],
         isConnected: true,
         isConnecting: false,
-      };
-
-      persistWallet(next);
+      }));
       setStorageItem(STORAGE_KEYS.walletProviderKind, provider);
       setStatus('CONNECTED');
       return true;
     },
-    [persistWallet]
+    [commitWallet]
   );
 
   const disconnectWallet = useCallback(() => {
-    persistWallet(INITIAL_WALLET);
+    commitWallet(() => INITIAL_WALLET);
     setActiveProvider(null);
     setStatus('DISCONNECTED');
     setError(null);
     removeStorageItem(STORAGE_KEYS.wallet);
     removeStorageItem(STORAGE_KEYS.walletProviderKind);
-  }, [persistWallet]);
+  }, [commitWallet]);
 
   const switchChain = useCallback(
     async (chain: ChainNetwork): Promise<boolean> => {
@@ -217,57 +289,112 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
       setError(null);
       await delay(CHAIN_SWITCH_DELAY_MS);
 
-      persistWallet((current) => ({ ...current, chain, chainId: CHAIN_ID_MAP[chain] }));
+      commitWallet((current) => ({ ...current, chain, chainId: CHAIN_ID_MAP[chain] }));
       setStatus('CONNECTED');
       return true;
     },
-    [activeProvider, persistWallet, wallet.isConnected]
+    [activeProvider, commitWallet, wallet.isConnected]
   );
 
-  const recordPurchase = useCallback(
-    async (input: RecordPurchaseInput): Promise<TransactionRecord> => {
+  /**
+   * DATA-01 / FIN-01: settles an entire order as one atomic operation.
+   *
+   * Every balance read happens inside the functional updater, so the deduction
+   * is computed from the latest committed state rather than a render-time
+   * snapshot. The full `totalRequiredCrypto` (subtotal + platform fee + gas) is
+   * deducted in a single write, eliminating the previous behaviour where each
+   * line re-read a stale `wallet` and the final write clobbered earlier ones.
+   */
+  const recordOrderSettlement = useCallback(
+    async (input: RecordOrderSettlementInput): Promise<RecordOrderSettlementResult> => {
+      if (input.lines.length === 0) {
+        throw new Error('Cannot settle an order with no line items.');
+      }
+
+      const chargedCrypto = Number(
+        (Number.isFinite(input.totalRequiredCrypto) ? input.totalRequiredCrypto : 0).toFixed(6)
+      );
+
       setStatus('TRANSACTING');
-      await delay(200);
+      await delay(SETTLEMENT_BROADCAST_DELAY_MS);
 
-      const id = `tx-${input.assetId}-${Date.now()}`;
-      const record: TransactionRecord = {
-        id,
-        txHash: makeTxHash(id),
-        assetId: input.assetId,
-        assetTitle: input.assetTitle,
-        assetThumbnail: input.assetThumbnail,
-        buyerAddress: wallet.address ?? '0x0000000000000000000000000000000000000000',
-        sellerAddress: input.sellerAddress,
-        amountCrypto: input.amountCrypto,
-        amountFiatUsd: input.amountFiatUsd,
-        currency: input.currency,
-        chain: input.chain,
-        status: 'confirmed',
-        timestamp: new Date().toISOString(),
-        gasUsedGwei: input.gasUsedGwei ?? 184200,
-      };
+      const settlementId = `settlement-${Date.now()}`;
+      const records: TransactionRecord[] = input.lines.map((line, index) => {
+        const id = `${settlementId}-${index}-${line.assetId}`;
+        return {
+          id,
+          txHash: makeTxHash(id),
+          assetId: line.assetId,
+          assetTitle: line.assetTitle,
+          assetThumbnail: line.assetThumbnail,
+          buyerAddress: ZERO_ADDRESS,
+          sellerAddress: line.sellerAddress,
+          amountCrypto: line.amountCrypto,
+          amountFiatUsd: line.amountFiatUsd,
+          currency: line.currency,
+          chain: line.chain,
+          status: 'confirmed' as const,
+          timestamp: new Date().toISOString(),
+          gasUsedGwei: line.gasUsedGwei ?? 0,
+        };
+      });
 
+      // FIN-01: atomic batch settlement.
+      //
+      // `commitWallet` performs a synchronous read-modify-write, so the solvency
+      // check and the deduction cannot be separated by another settlement. The
+      // full `chargedCrypto` (subtotal + platform fee + gas) is debited in this
+      // one write, and nothing is committed when the balance is short.
+      let balanceBeforeEth = 0;
+      let balanceAfterEth = 0;
+      let settled = false;
+
+      commitWallet((current) => {
+        balanceBeforeEth = current.balanceEth;
+
+        if (current.balanceEth < chargedCrypto) {
+          // Short balance: return the state unchanged so nothing is persisted.
+          return current;
+        }
+
+        const nextBalance = Number((current.balanceEth - chargedCrypto).toFixed(6));
+        balanceAfterEth = nextBalance;
+        settled = true;
+
+        return {
+          ...current,
+          balanceEth: nextBalance,
+          balanceUsd: Number((nextBalance * ETH_USD_RATE).toFixed(2)),
+        };
+      });
+
+      if (!settled) {
+        setStatus('ERROR');
+        setError(
+          `Settlement rejected: ${chargedCrypto.toFixed(6)} ETH required but ${balanceBeforeEth.toFixed(
+            6
+          )} ETH available.`
+        );
+        throw new InsufficientFundsError(chargedCrypto, balanceBeforeEth);
+      }
+
+      // Buyer address is stamped from the authoritative wallet identity.
       setTransactions((current) => {
-        const next = [record, ...current];
+        const next = [
+          ...records.map((record) => ({
+            ...record,
+            buyerAddress: walletRef.current.address ?? ZERO_ADDRESS,
+          })),
+          ...current,
+        ];
         if (hydrated.current) setStorageItem(STORAGE_KEYS.transactions, next);
         return next;
       });
 
-      if (wallet.isConnected) {
-        const remainingEth = Number(
-          Math.max(wallet.balanceEth - input.amountCrypto, 0).toFixed(6)
-        );
-        persistWallet({
-          ...wallet,
-          balanceEth: remainingEth,
-          balanceUsd: Number((remainingEth * ETH_USD_RATE).toFixed(2)),
-        });
-      }
-
       setStatus('CONNECTED');
-      return record;
+      return { records, balanceBeforeEth, balanceAfterEth, chargedCrypto };
     },
-    [persistWallet, wallet]
+    [commitWallet]
   );
 
   const resetHistory = useCallback(() => {
@@ -288,7 +415,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
       disconnectWallet,
       switchChain,
       clearError,
-      recordPurchase,
+      recordOrderSettlement,
       resetHistory,
     }),
     [
@@ -301,7 +428,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
       disconnectWallet,
       switchChain,
       clearError,
-      recordPurchase,
+      recordOrderSettlement,
       resetHistory,
     ]
   );
