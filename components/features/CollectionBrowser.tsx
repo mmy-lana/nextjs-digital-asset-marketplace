@@ -1,6 +1,7 @@
 'use client';
 
 import { useMemo, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { PackageOpen } from 'lucide-react';
 import { AssetCard } from '@/components/molecules/AssetCard';
 import { GlassPanel } from '@/components/ui/GlassPanel';
@@ -28,6 +29,10 @@ export function CollectionBrowser({
   className,
 }: CollectionBrowserProps) {
   const { addToCart, isAssetInCart, isAssetAvailable } = useCart();
+  // ARCH-01: client-side navigation preserves the SPA runtime; a full
+  // `window.location.href` assignment tears down the document and discards
+  // in-memory wallet, cart and filter state.
+  const router = useRouter();
   const [sortBy, setSortBy] = useState<SortOption>('recently_listed');
 
   const members = useMemo(() => {
@@ -85,9 +90,7 @@ export function CollectionBrowser({
               isInCart={isAssetInCart(asset.id)}
               isAvailable={isAssetAvailable(asset.id) && asset.isAvailable}
               onQuickAdd={(target) => addToCart(target, target.license)}
-              onInspect={(target) => {
-                window.location.href = `/asset/${target.slug}`;
-              }}
+              onInspect={(target) => router.push(`/asset/${target.slug}`)}
             />
           ))}
         </div>

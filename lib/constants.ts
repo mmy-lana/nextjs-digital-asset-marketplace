@@ -81,10 +81,34 @@ export const CHAIN_RATES: Record<ChainNetwork, number> = {
 
 export const DEFAULT_CHAIN: ChainNetwork = 'ethereum';
 
-export function getChainDescriptor(chain: ChainNetwork): ChainDescriptor {
-  return (
-    CHAIN_NETWORKS.find((descriptor) => descriptor.value === chain) ?? CHAIN_NETWORKS[0]
+/** Every network the marketplace can route a settlement through. */
+export const CHAIN_NETWORKS_LIST: ChainNetwork[] = ['ethereum', 'polygon', 'solana', 'arbitrum'];
+
+export function isChainNetwork(value: unknown): value is ChainNetwork {
+  return typeof value === 'string' && (CHAIN_NETWORKS_LIST as string[]).includes(value);
+}
+
+/**
+ * TYPE-01: validated network lookup.
+ *
+ * Previously an unknown network silently fell back to the first descriptor,
+ * which made a typo render as Ethereum and route a settlement to the wrong
+ * chain. Unknown values are now reported in development and resolve to the
+ * default network explicitly, so the caller can surface the bad input.
+ */
+export function getChainDescriptor(chain: ChainNetwork | string): ChainDescriptor {
+  if (isChainNetwork(chain)) {
+    const match = CHAIN_NETWORKS.find((descriptor) => descriptor.value === chain);
+    if (match) return match;
+  }
+
+  console.warn(
+    `[constants] getChainDescriptor received an unknown network: ${String(
+      chain
+    )}. Falling back to "${DEFAULT_CHAIN}".`
   );
+
+  return CHAIN_NETWORKS.find((descriptor) => descriptor.value === DEFAULT_CHAIN) ?? CHAIN_NETWORKS[0];
 }
 
 /**

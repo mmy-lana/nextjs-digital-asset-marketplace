@@ -640,6 +640,151 @@ async function runSuiteSettlement(browser) {
   }
 }
 
+/**
+ * Phase 2: DATA-02 exclusive-lock lifecycle, ARCH-01 client-side navigation and
+ * DEF-01 clipboard hardening.
+ */
+async function runSuiteStateIntegrity(browser) {
+  const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  const page = await context.newPage();
+  const sink = { consoleErrors: [], pageErrors: [], failedRequests: [] };
+  attachCollectors(page, sink);
+
+  try {
+    await gotoStable(page, '/');
+    await page.evaluate(() => window.localStorage.clear());
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.waitForTimeout(600);
+
+    // --- ARCH-01: collection -> asset must stay inside the SPA runtime. -----
+    await gotoStable(page, '/collections/chromatic-mint');
+    const navigationPromise = page.waitForNavigation({ timeout: 5000 }).catch(() => null);
+    await page.locator('[data-testid="asset-card-inspect"]').first().click();
+    const hardNavigation = await navigationPromise;
+    await page.waitForTimeout(900);
+    const urlAfterInspect = page.url();
+    record(
+      hardNavigation === null && urlAfterInspect.includes('/asset/'),
+      'state: collection inspect uses client-side routing (no document teardown)',
+      `url=${urlAfterInspect}`
+    );
+    const stillInteractive = await page
+      .locator('[data-testid="creator-header"]')
+      .isVisible()
+      .catch(() => false);
+    record(stillInteractive, 'state: asset detail rendered after client-side navigation');
+
+    // --- DEF-01: clipboard must work even with the async API removed. -----
+    await gotoStable(page, '/');
+    // Remove navigator.clipboard entirely to simulate an insecure context.
+    await page.addInitScript(() => {
+      Object.defineProperty(navigator, 'clipboard', { value: undefined, configurable: true });
+    });
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.waitForTimeout(700);
+
+    await page.locator('[data-testid="asset-card-inspect"]').first().click();
+    await page.waitForTimeout(600);
+    const clipboardMissing = await page.evaluate(() => navigator.clipboard === undefined);
+    record(clipboardMissing, 'state: clipboard API removed for the fallback test');
+
+    await page.locator('[data-testid="copy-contract"]').click();
+    await page.waitForTimeout(500);
+    // With the async API removed the component must either copy successfully via
+    // the execCommand fallback or surface an explicit failure — never silently
+    // do nothing.
+    const copiedShown = await page.getByText('Copied').count();
+    const fallbackSurfaced = await page.locator('[data-testid="copy-failed"]').count();
+    const noUncaughtFromClipboard = sink.pageErrors.length === 0;
+    record(
+      noUncaughtFromClipboard,
+      'state: clipboard fallback does not throw when the API is unavailable',
+      sink.pageErrors.join(' | ')
+    );
+    record(
+      copiedShown > 0 || fallbackSurfaced > 0,
+      'state: clipboard action always yields a user-visible outcome (copy or failure)',
+      `copied=${copiedShown} failed=${fallbackSurfaced}`
+    );
+    // Whatever happened, no orphan textarea may remain in the document.
+    const orphanTextareas = await page.evaluate(
+      () => document.querySelectorAll('body > textarea').length
+    );
+    record(orphanTextareas === 0, 'state: clipboard fallback cleans up its temporary node', `orphans=${orphanTextareas}`);
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(400);
+
+    // --- DATA-02: exclusive licence swap must release/acquire the lock. -----
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.evaluate(() => window.localStorage.clear());
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.waitForTimeout(700);
+
+    // `synth-nexus-ui` ships as standard_commercial; add it via the inspect
+    // modal with the exclusive licence from the start.
+    await page.locator('[data-asset-slug="synth-nexus-ui"] [data-testid="asset-card-inspect"]').click();
+    await page.waitForTimeout(500);
+    await page.locator('[data-testid="license-selector"] input[value="exclusive_nft"]').check();
+    await page.waitForTimeout(400);
+    await page.locator('[data-testid="inspect-add-to-cart"]').click();
+    await page.waitForTimeout(400);
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(400);
+
+    // The cart must now treat the asset as exclusive: single unit, no steppers.
+    await page.locator('[data-testid="cart-toggle"]').first().click();
+    await page.waitForTimeout(500);
+    const exclusiveBanner = await page.getByText('Single unit').count();
+    record(exclusiveBanner > 0, 'state: exclusive licence stored on the cart line');
+    const steppers = await page.locator('button[aria-label*="Increase quantity"]').count();
+    record(steppers === 0, 'state: exclusive line exposes no quantity steppers', `steppers=${steppers}`);
+
+    const lockedStored = await page.evaluate(() => {
+      const raw = window.localStorage.getItem('ns_asset_market_unavailable_v1');
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : { invalid: parsed };
+    });
+    record(
+      Array.isArray(lockedStored) && lockedStored.includes('ast-06'),
+      'state: exclusive asset serialised as string[] (Set collapse bug avoided)',
+      JSON.stringify(lockedStored)
+    );
+
+    // Swapping back to standard must RELEASE the lock.
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(400);
+    await page.locator('[data-asset-slug="synth-nexus-ui"] [data-testid="asset-card-inspect"]').click();
+    await page.waitForTimeout(500);
+    await page.locator('[data-testid="license-selector"] input[value="standard_commercial"]').check();
+    await page.waitForTimeout(300);
+    await page.locator('[data-testid="inspect-add-to-cart"]').click().catch(() => undefined);
+    await page.waitForTimeout(400);
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(400);
+
+    const releasedStored = await page.evaluate(() => {
+      const raw = window.localStorage.getItem('ns_asset_market_unavailable_v1');
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : { invalid: parsed };
+    });
+    record(
+      Array.isArray(releasedStored) && !releasedStored.includes('ast-06'),
+      'state: swapping away from exclusive releases the asset lock',
+      JSON.stringify(releasedStored)
+    );
+
+    record(sink.pageErrors.length === 0, 'state: no uncaught exceptions', sink.pageErrors.join(' | '));
+    record(sink.consoleErrors.length === 0, 'state: no console errors', sink.consoleErrors.join(' | '));
+  } catch (error) {
+    record(false, 'state: completed without throwing', error.message);
+    await page.screenshot({ path: path.join(OUT_DIR, 'state-failure.png') }).catch(() => undefined);
+  } finally {
+    await context.close();
+  }
+}
+
 async function main() {
   await mkdir(OUT_DIR, { recursive: true });
   console.log(`Headless Chrome verification against ${BASE_URL} (suite: ${SUITE})`);
@@ -672,6 +817,9 @@ async function main() {
     }
     if (SUITE === 'settlement' || SUITE === 'all') {
       await runSuiteSettlement(browser);
+    }
+    if (SUITE === 'state' || SUITE === 'all') {
+      await runSuiteStateIntegrity(browser);
     }
   } finally {
     await browser.close();

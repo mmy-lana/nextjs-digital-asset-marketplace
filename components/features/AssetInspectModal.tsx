@@ -10,6 +10,7 @@ import {
   HardDrive,
   Heart,
   Maximize2,
+  RefreshCw,
   ShoppingCart,
 } from 'lucide-react';
 import { AudioPreviewPlayer } from '@/components/molecules/AudioPreviewPlayer';
@@ -64,6 +65,7 @@ export function AssetInspectModal({
   const [isMagnified, setIsMagnified] = useState(false);
   const [imageFailed, setImageFailed] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [copyFailed, setCopyFailed] = useState(false);
 
   // Reset per-asset view state whenever the target changes.
   useEffect(() => {
@@ -71,6 +73,7 @@ export function AssetInspectModal({
     setIsMagnified(false);
     setImageFailed(false);
     setCopied(false);
+    setCopyFailed(false);
   }, [asset]);
 
   const effectiveLicense = useMemo<LicenseType>(
@@ -87,14 +90,57 @@ export function AssetInspectModal({
     [asset, effectiveLicense]
   );
 
+  /**
+   * DEF-01: clipboard access is unavailable in insecure contexts, when the
+   * permission is denied, or on browsers that never expose
+   * `navigator.clipboard`. Falls back to a hidden textarea plus
+   * `document.execCommand('copy')` so the affordance always works, and surfaces
+   * a failure state instead of silently pretending to have copied.
+   */
   const copyContract = useCallback(async () => {
     if (!asset) return;
+    setCopied(false);
+
+    const clipboard = typeof navigator !== 'undefined' ? navigator.clipboard : undefined;
+
+    if (clipboard && typeof clipboard.writeText === 'function') {
+      try {
+        await clipboard.writeText(asset.contractAddress);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1600);
+        return;
+      } catch {
+        // Permission denied or insecure context: fall through to the legacy path.
+      }
+    }
+
+    if (typeof document === 'undefined') return;
+
+    const textarea = document.createElement('textarea');
+    textarea.value = asset.contractAddress;
+    textarea.setAttribute('readonly', '');
+    textarea.setAttribute('aria-hidden', 'true');
+    textarea.style.position = 'fixed';
+    textarea.style.top = '-1000px';
+    textarea.style.opacity = '0';
+    document.body.appendChild(textarea);
+
     try {
-      await navigator.clipboard.writeText(asset.contractAddress);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1600);
+      textarea.select();
+      textarea.setSelectionRange(0, asset.contractAddress.length);
+      const succeeded = document.execCommand('copy');
+      if (succeeded) {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1600);
+      } else {
+        setCopyFailed(true);
+        setTimeout(() => setCopyFailed(false), 2400);
+      }
     } catch {
-      setCopied(false);
+      setCopyFailed(true);
+      setTimeout(() => setCopyFailed(false), 2400);
+    } finally {
+      document.body.removeChild(textarea);
     }
   }, [asset]);
 
@@ -299,12 +345,24 @@ export function AssetInspectModal({
                 variant="primary-neon"
                 block
                 className="mt-4"
-                disabled={unavailable || isInCart}
+                // DATA-02: an asset already in the cart stays actionable so the
+                // selected licence can be applied to the existing cart line.
+                disabled={unavailable}
                 onClick={() => onAddToCart(asset, effectiveLicense)}
-                iconLeft={<ShoppingCart aria-hidden="true" className="size-4" />}
+                iconLeft={
+                  isInCart ? (
+                    <RefreshCw aria-hidden="true" className="size-4" />
+                  ) : (
+                    <ShoppingCart aria-hidden="true" className="size-4" />
+                  )
+                }
                 data-testid="inspect-add-to-cart"
               >
-                {unavailable ? 'Asset unavailable' : isInCart ? 'Already in cart' : 'Add to cart'}
+                {unavailable
+                  ? 'Asset unavailable'
+                  : isInCart
+                    ? 'Update licence'
+                    : 'Add to cart'}
               </GlassButton>
               <p className="mt-2 text-center text-[11px] text-slate-600">{license.summary}</p>
             </div>
@@ -328,6 +386,10 @@ export function AssetInspectModal({
                 </span>
                 {copied ? (
                   <span className="shrink-0 text-[10px] text-emerald-300">Copied</span>
+                ) : copyFailed ? (
+                  <span className="shrink-0 text-[10px] text-amber-300" data-testid="copy-failed">
+                    Copy unavailable
+                  </span>
                 ) : (
                   <Copy aria-hidden="true" className="size-4 shrink-0 text-slate-500" />
                 )}

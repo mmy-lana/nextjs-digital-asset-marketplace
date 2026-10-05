@@ -77,7 +77,7 @@ export function AssetExplorer({
     resetFilters,
   } = useFilterController(assets, initialFilters, filterApi);
 
-  const { addToCart, isAssetInCart, isAssetAvailable } = useCart();
+  const { addToCart, updateLicense, isAssetInCart, isAssetAvailable } = useCart();
   const [isFilterSheetOpen, setIsFilterSheetOpen] = useState(false);
   const [inspectedAsset, setInspectedAsset] = useState<DigitalAsset | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -294,6 +294,12 @@ export function AssetExplorer({
         isOpen={inspectedAsset !== null}
         onClose={() => setInspectedAsset(null)}
         onAddToCart={(asset, license) => {
+          // DATA-02: when the asset already has a line, a licence change updates
+          // that line (and its exclusive lock) rather than creating a duplicate.
+          if (isAssetInCart(asset.id)) {
+            updateLicense(asset.id, license);
+            return;
+          }
           addToCart(asset, license);
         }}
         isInCart={inspectedAsset ? isAssetInCart(inspectedAsset.id) : false}

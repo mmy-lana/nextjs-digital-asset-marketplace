@@ -117,10 +117,20 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
   const [unavailableAssetIds, setUnavailableAssetIds] = useState<Set<string>>(new Set());
   const hydrated = useRef(false);
 
+  /**
+   * DATA-02: synchronous source of truth for cart lines.
+   *
+   * React state updaters are not guaranteed to run synchronously, so cart
+   * mutations that must reason about the resulting items perform a synchronous
+   * read-modify-write here and then mirror the result into React state.
+   */
+  const itemsRef = useRef<CartItem[]>([]);
+
   // Hydration — storage is only touched inside the effect.
   useEffect(() => {
     const storedItems = getStorageItem<CartItem[] | null>(STORAGE_KEYS.cart, null);
     if (Array.isArray(storedItems)) {
+      itemsRef.current = storedItems;
       setItems(storedItems);
     }
     // A Set collapses to `{}` under JSON.stringify, so it is stored as string[].
@@ -131,6 +141,7 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const persistItems = useCallback((next: CartItem[]) => {
+    itemsRef.current = next;
     setItems(next);
     if (hydrated.current) setStorageItem(STORAGE_KEYS.cart, next);
   }, []);
@@ -140,13 +151,37 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
     if (hydrated.current) setStorageItem(STORAGE_KEYS.unavailableAssets, serializeIdSet(next));
   }, []);
 
+  /**
+   * DATA-02: derives the exclusive-asset lock set from a given cart.
+   *
+   * The lock set is always a pure function of the lines, which removes the
+   * possibility of the inventory and the locks disagreeing after a licence swap.
+   */
+  const locksForItems = useCallback((lines: CartItem[]): Set<string> => {
+    const locked = new Set<string>();
+    for (const line of lines) {
+      if (line.selectedLicense === 'exclusive_nft') locked.add(line.assetId);
+    }
+    return locked;
+  }, []);
+
+  /** Applies a synchronous read-modify-write to the cart lines. */
+  const commitItems = useCallback(
+    (resolve: (current: CartItem[]) => CartItem[]): CartItem[] => {
+      const next = resolve(itemsRef.current);
+      persistItems(next);
+      return next;
+    },
+    [persistItems]
+  );
+
   const addToCart = useCallback(
     (asset: DigitalAsset, license: LicenseType = asset.license) => {
-      // An exclusive line already in the cart means the asset is spoken for.
-      setItems((current) => {
+      commitItems((current) => {
         const existing = current.find((item) => item.assetId === asset.id);
 
         if (existing) {
+          // An exclusive line can never be duplicated or incremented.
           if (existing.selectedLicense === 'exclusive_nft') return current;
           const nextQuantity = Math.min(existing.quantity + 1, MAX_CART_QUANTITY);
           if (nextQuantity === existing.quantity) return current;
@@ -169,28 +204,19 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
         ];
       });
 
-      if (license === 'exclusive_nft') {
-        setUnavailableAssetIds((current) => {
-          const next = new Set(current);
-          next.add(asset.id);
-          if (hydrated.current) setStorageItem(STORAGE_KEYS.unavailableAssets, serializeIdSet(next));
-          return next;
-        });
-      }
+      // The lock set is re-derived from the committed lines so it stays correct
+      // whether the new line is exclusive or not.
+      persistLocked(locksForItems(itemsRef.current));
     },
-    []
+    [commitItems, locksForItems, persistLocked]
   );
 
   const removeFromCart = useCallback(
     (assetId: string) => {
-      persistItems(items.filter((item) => item.assetId !== assetId));
-      if (unavailableAssetIds.has(assetId)) {
-        const next = new Set(unavailableAssetIds);
-        next.delete(assetId);
-        persistLocked(next);
-      }
+      const next = commitItems((current) => current.filter((item) => item.assetId !== assetId));
+      persistLocked(locksForItems(next));
     },
-    [items, unavailableAssetIds, persistItems, persistLocked]
+    [commitItems, locksForItems, persistLocked]
   );
 
   const updateQuantity = useCallback(
@@ -199,21 +225,29 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
         removeFromCart(assetId);
         return;
       }
-      persistItems(
-        items.map((item) => {
+      commitItems((current) =>
+        current.map((item) => {
           if (item.assetId !== assetId) return item;
           if (item.selectedLicense === 'exclusive_nft') return item;
           return { ...item, quantity: Math.min(quantity, MAX_CART_QUANTITY) };
         })
       );
     },
-    [items, persistItems, removeFromCart]
+    [commitItems, removeFromCart]
   );
 
+  /**
+   * DATA-02: swaps a line's licence and re-prices it in a single transition.
+   *
+   * The new lines and the new lock set are both derived from the same committed
+   * array, so the inventory and the exclusive locks can never disagree. The
+   * previous implementation decided the lock from the *pre-update* lines, which
+   * inverted the release/acquire behaviour on a licence swap.
+   */
   const updateLicense = useCallback(
     (assetId: string, license: LicenseType) => {
-      persistItems(
-        items.map((item) => {
+      const next = commitItems((current) =>
+        current.map((item) => {
           if (item.assetId !== assetId) return item;
           return {
             ...item,
@@ -223,27 +257,16 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
           };
         })
       );
-
-      // Swapping the last exclusive line releases the asset lock.
-      setUnavailableAssetIds((current) => {
-        const stillExclusive = items.some(
-          (item) => item.assetId === assetId && item.selectedLicense === 'exclusive_nft'
-        );
-        if (stillExclusive || license === 'exclusive_nft') return current;
-        const next = new Set(current);
-        next.delete(assetId);
-        if (hydrated.current) setStorageItem(STORAGE_KEYS.unavailableAssets, serializeIdSet(next));
-        return next;
-      });
+      persistLocked(locksForItems(next));
     },
-    [items, persistItems]
+    [commitItems, locksForItems, persistLocked]
   );
 
   const clearCart = useCallback(() => {
-    persistItems([]);
+    commitItems(() => []);
     persistLocked(new Set());
     removeStorageItem(STORAGE_KEYS.unavailableAssets);
-  }, [persistItems, persistLocked]);
+  }, [commitItems, persistLocked]);
 
   const isAssetInCart = useCallback(
     (assetId: string) => items.some((item) => item.assetId === assetId),
