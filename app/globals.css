@@ -1,12 +1,56 @@
 @import "tailwindcss";
 
+/* ---------------------------------------------------------------------------
+ * Design tokens
+ * ---------------------------------------------------------------------------
+ * Tailwind v4 generates utilities from these custom properties, so
+ * `bg-neon-cyan`, `text-neon-cyan` and `bg-dark-glass` become first-class
+ * utilities without a separate `tailwind.config`.
+ */
 @theme {
   --color-neon-cyan: #06b6d4;
+  --color-neon-cyan-soft: #22d3ee;
+  --color-neon-cyan-deep: #0e7490;
   --color-neon-cyan-glow: rgba(6, 182, 212, 0.4);
+  --color-neon-violet: #a78bfa;
+  --color-neon-violet-deep: #7c3aed;
+
   --color-dark-glass: rgba(2, 6, 23, 0.75);
   --color-glass-border: rgba(255, 255, 255, 0.1);
+  --color-glass-highlight: rgba(255, 255, 255, 0.06);
+
+  --shadow-glass: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+  --shadow-neon: 0 0 0 1px rgba(6, 182, 212, 0.35), 0 8px 24px -6px rgba(6, 182, 212, 0.45);
+
+  --radius-glass: 1rem;
+
+  --animate-neon-pulse: neon-pulse 2.8s ease-in-out infinite;
+  --animate-shimmer: shimmer 1.6s linear infinite;
 }
 
+@keyframes neon-pulse {
+  0%,
+  100% {
+    opacity: 0.55;
+    box-shadow: 0 0 0 0 rgba(6, 182, 212, 0);
+  }
+  50% {
+    opacity: 1;
+    box-shadow: 0 0 18px 2px rgba(6, 182, 212, 0.28);
+  }
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: -140% 0;
+  }
+  100% {
+    background-position: 240% 0;
+  }
+}
+
+/* Hides the scrollbar while keeping the element scrollable — used by the
+ * horizontally scrolling category ribbon and filter chip rows on touch. */
 @utility scrollbar-hide {
   -ms-overflow-style: none;
   scrollbar-width: none;
@@ -17,12 +61,105 @@
 
 :root {
   color-scheme: dark;
+  /* Height of the sticky header, consumed by scroll-margin utilities. */
+  --header-height: 4rem;
 }
 
-body {
-  background-color: #020617;
-  color: #f8fafc;
-  min-height: 100vh;
-  font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-  overflow-x: hidden;
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+    scroll-behavior: smooth;
+  }
+
+  body {
+    background-color: #020617;
+    color: #f8fafc;
+    min-height: 100vh;
+    font-family:
+      system-ui,
+      -apple-system,
+      BlinkMacSystemFont,
+      'Segoe UI',
+      Roboto,
+      Oxygen,
+      Ubuntu,
+      Cantarell,
+      sans-serif;
+    overflow-x: hidden;
+  }
+
+  /* Anchor targets clear the sticky header when jumping to in-page links. */
+  section[id],
+  h2[id],
+  h3[id] {
+    scroll-margin-top: calc(var(--header-height) + 1rem);
+  }
+
+  /* A visible, on-brand focus ring for every keyboard-reachable control. */
+  :focus-visible {
+    outline: 2px solid var(--color-neon-cyan);
+    outline-offset: 2px;
+  }
+
+  ::selection {
+    background-color: rgba(6, 182, 212, 0.3);
+    color: #cffafe;
+  }
+
+  /* Respect reduced-motion across every animated primitive. */
+  @media (prefers-reduced-motion: reduce) {
+    html {
+      scroll-behavior: auto;
+    }
+
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.001ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.001ms !important;
+    }
+  }
+}
+
+@layer components {
+  /* Shared skeleton surface for every loading placeholder. */
+  .skeleton-sheen {
+    background-image: linear-gradient(
+      100deg,
+      rgba(148, 163, 184, 0.06) 20%,
+      rgba(148, 163, 184, 0.18) 40%,
+      rgba(148, 163, 184, 0.06) 60%
+    );
+    background-size: 220% 100%;
+    animation: var(--animate-shimmer);
+  }
+
+  /* Neon hairline gradient border for hero panels. */
+  .neon-hairline {
+    position: relative;
+  }
+
+  .neon-hairline::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    padding: 1px;
+    background: linear-gradient(
+      135deg,
+      rgba(6, 182, 212, 0.55),
+      rgba(167, 139, 250, 0.28),
+      rgba(255, 255, 255, 0.04)
+    );
+    -webkit-mask:
+      linear-gradient(#000 0 0) content-box,
+      linear-gradient(#000 0 0);
+    mask:
+      linear-gradient(#000 0 0) content-box,
+      linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor;
+    mask-composite: exclude;
+    pointer-events: none;
+  }
 }

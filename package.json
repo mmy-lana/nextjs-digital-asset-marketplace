@@ -9,7 +9,8 @@
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
     "verify": "node scripts/verify.mjs",
-    "verify:responsive": "node scripts/verify.mjs --suite responsive"
+    "verify:responsive": "node scripts/verify.mjs --suite responsive",
+    "verify:design-system": "node scripts/verify-design-system.mjs"
   },
   "dependencies": {
     "lucide-react": "latest",
