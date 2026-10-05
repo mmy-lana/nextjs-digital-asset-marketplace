@@ -60,7 +60,7 @@ export function NavigationHeader({ assets, onCartOpen, className, ...rest }: Nav
     <>
       <header
         className={cn(
-          'sticky top-0 z-40 h-[var(--header-height)] w-full',
+          'sticky top-0 z-40 h-[var(--header-height)] w-full gpu-layer',
           'border-b bg-slate-950/80 backdrop-blur-xl transition-shadow',
           isScrolled ? 'border-white/10 shadow-[0_4px_24px_0_rgba(0,0,0,0.45)]' : 'border-transparent',
           className

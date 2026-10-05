@@ -56,7 +56,10 @@ export function CategorySubNav({ assets, filterApi, className, ...rest }: Catego
 
   return (
     <div
-      className={cn('sticky top-[var(--header-height)] z-30 border-b border-white/10 bg-slate-950/80 backdrop-blur-xl', className)}
+      className={cn(
+        'sticky top-[var(--header-height)] z-30 border-b border-white/10 bg-slate-950/80 backdrop-blur-xl gpu-layer',
+        className
+      )}
       data-testid="category-subnav"
       {...rest}
     >

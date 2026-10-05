@@ -13,16 +13,26 @@
 import { chromium } from 'playwright';
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { ensureServer } from './lib/server-manager.mjs';
 
 const args = process.argv.slice(2);
 const getArg = (name, fallback) => {
   const index = args.indexOf(`--${name}`);
   return index >= 0 && typeof args[index + 1] === 'string' ? args[index + 1] : fallback;
 };
+const hasFlag = (name) => args.includes(`--${name}`);
 
-const BASE_URL = getArg('url', 'http://127.0.0.1:3100').replace(/\/$/, '');
+const REQUESTED_URL = getArg('url', 'http://127.0.0.1:3100').replace(/\/$/, '');
 const SUITE = getArg('suite', 'all');
 const OUT_DIR = path.resolve(process.cwd(), '.verify');
+/** `--no-build` skips the on-demand production build when a server is spawned. */
+const AUTO_BUILD = !hasFlag('no-build');
+
+/**
+ * Resolved at startup by `ensureServer`; defaults to the requested URL so the
+ * module-level helpers remain usable before the server is provisioned.
+ */
+let BASE_URL = REQUESTED_URL;
 
 const VIEWPORTS = [
   { name: '360-small-mobile', width: 360, height: 800 },
@@ -967,14 +977,248 @@ async function runSuiteHardening(browser) {
   }
 }
 
+/**
+ * Scroll performance hardening.
+ *
+ * Asserts the compositing and containment contracts that produce smooth
+ * scrolling, and — critically — proves the measurement harness still sees real
+ * geometry for offscreen cards, so `content-visibility: auto` cannot turn the
+ * touch-target and overflow audits into a vacuous pass.
+ */
+async function runSuitePerformance(browser) {
+  for (const viewport of [
+    { name: '390-mobile', width: 390, height: 844 },
+    { name: '430-large-mobile', width: 430, height: 932 },
+    { name: '768-tablet', width: 768, height: 1024 },
+    { name: '1440-wide-desktop', width: 1440, height: 900 },
+  ]) {
+    const context = await browser.newContext({
+      viewport: { width: viewport.width, height: viewport.height },
+      deviceScaleFactor: 1,
+    });
+    const page = await context.newPage();
+    const sink = { consoleErrors: [], pageErrors: [], failedRequests: [] };
+    attachCollectors(page, sink);
+
+    try {
+      await gotoStable(page, '/');
+      const label = `perf@${viewport.name}`;
+
+      // --- Root scroll behaviour must not be smoothed. ---------------------
+      const scrollBehaviour = await page.evaluate(
+        () => window.getComputedStyle(document.documentElement).scrollBehavior
+      );
+      record(
+        scrollBehaviour !== 'smooth',
+        `${label}: root scroll-behavior is not smooth`,
+        scrollBehaviour
+      );
+
+      // --- Both sticky chrome layers must be GPU composited. ----------------
+      for (const [name, testId] of [
+        ['header', 'navigation-header'],
+        ['subnav', 'category-subnav'],
+      ]) {
+        const layer = await page
+          .locator(`[data-testid="${testId}"]`)
+          .first()
+          .evaluate((el) => {
+            const style = window.getComputedStyle(el);
+            return {
+              position: style.position,
+              willChange: style.willChange,
+              backface: style.backfaceVisibility,
+              transform: style.transform,
+              promoted: style.transform !== 'none',
+            };
+          });
+        record(
+          layer.position === 'sticky',
+          `${label}: ${name} is sticky`,
+          layer.position
+        );
+        record(
+          layer.willChange === 'transform' && layer.backface === 'hidden' && layer.promoted,
+          `${label}: ${name} is a GPU layer (will-change + backface + transform)`,
+          JSON.stringify(layer)
+        );
+      }
+
+      // --- Cards must be render-contained. --------------------------------
+      const cardContainment = await page.evaluate(() => {
+        const cards = Array.from(document.querySelectorAll('[data-testid="asset-card"]'));
+        if (cards.length === 0) return { count: 0 };
+        const style = window.getComputedStyle(cards[0]);
+        return {
+          count: cards.length,
+          contentVisibility: style.contentVisibility,
+          cvSkip: cards[0].hasAttribute('data-cv-skip'),
+          contain: style.contain,
+          containIntrinsicSize: style.containIntrinsicSize,
+        };
+      });
+      record(cardContainment.count > 0, `${label}: cards present for containment check`);
+      record(
+        cardContainment.contain.includes('content') ||
+          (cardContainment.contain.includes('layout') &&
+            cardContainment.contain.includes('paint')),
+        `${label}: cards declare layout/style/paint containment`,
+        cardContainment.contain
+      );
+      // `content-visibility: auto` is intentionally opt-in on variable-height
+      // cards (see globals.css). Assert it is NOT silently enabled, because it
+      // reintroduces the scrollbar jump the containment already solves.
+      record(
+        cardContainment.contentVisibility !== 'auto' || cardContainment.cvSkip === true,
+        `${label}: offscreen render skipping is opt-in, never implicit`,
+        `contentVisibility=${cardContainment.contentVisibility}`
+      );
+      record(
+        /\b\d+px\b/.test(cardContainment.containIntrinsicSize),
+        `${label}: intrinsic size placeholder declared (stable scrollbar geometry)`,
+        cardContainment.containIntrinsicSize
+      );
+
+      // --- No measurement blind spot: offscreen cards keep real geometry. ---
+      const geometry = await page.evaluate(() => {
+        const cards = Array.from(document.querySelectorAll('[data-testid="asset-card"]'));
+        let offscreen = 0;
+        let offscreenMeasurable = 0;
+        let collapsed = 0;
+        for (const card of cards) {
+          const rect = card.getBoundingClientRect();
+          if (rect.top <= window.innerHeight) continue;
+          offscreen += 1;
+          if (rect.width > 0 && rect.height > 0) offscreenMeasurable += 1;
+          const button = card.querySelector('[data-testid="asset-quick-add"]');
+          if (button) {
+            const buttonRect = button.getBoundingClientRect();
+            if (buttonRect.width === 0 || buttonRect.height === 0) collapsed += 1;
+          }
+        }
+        return { offscreen, offscreenMeasurable, collapsed };
+      });
+      record(geometry.offscreen > 0, `${label}: offscreen cards exist to test`, `offscreen=${geometry.offscreen}`);
+      record(
+        geometry.offscreenMeasurable === geometry.offscreen,
+        `${label}: every offscreen card still reports real geometry`,
+        `${geometry.offscreenMeasurable}/${geometry.offscreen}`
+      );
+      record(
+        geometry.collapsed === 0,
+        `${label}: offscreen controls remain measurable (no audit blind spot)`,
+        `collapsed=${geometry.collapsed}`
+      );
+
+      // --- Scroll stability: no long tasks and no layout shift while scrolling.
+      const stability = await page.evaluate(async () => {
+        const maxScroll = Math.max(
+          document.documentElement.scrollHeight - window.innerHeight,
+          0
+        );
+        const positions = [];
+        for (let step = 0; step <= 10; step += 1) {
+          positions.push(Math.round((maxScroll * step) / 10));
+        }
+
+        const longTasks = [];
+        const observer = new PerformanceObserver((list) => {
+          for (const entry of list.getEntries()) longTasks.push(Math.round(entry.duration));
+        });
+        try {
+          observer.observe({ type: 'longtask', buffered: false });
+        } catch {
+          // Long-task observer unsupported; the scroll assertion still applies.
+        }
+
+        const heights = [];
+        const started = performance.now();
+        for (const position of positions) {
+          window.scrollTo(0, position);
+          // Yield twice so layout and paint commit before sampling geometry.
+          await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+          heights.push(document.documentElement.scrollHeight);
+        }
+        const elapsed = performance.now() - started;
+        observer.disconnect();
+
+        const heightSpread = Math.max(...heights) - Math.min(...heights);
+        return {
+          longTasks,
+          longestTask: longTasks.length ? Math.max(...longTasks) : 0,
+          heightSpread,
+          steps: positions.length,
+          elapsed: Math.round(elapsed),
+          reachedBottom: window.scrollY > 0,
+        };
+      });
+
+      record(
+        stability.reachedBottom,
+        `${label}: page scrolls (scroll container is scrollable)`
+      );
+      record(
+        stability.longestTask <= 100,
+        `${label}: no long task over 100ms during a full-page scroll`,
+        `longest=${stability.longestTask}ms tasks=${stability.longTasks.length}`
+      );
+      record(
+        stability.heightSpread <= 2,
+        `${label}: no layout shift while scrolling (stable scrollbar geometry)`,
+        `spread=${stability.heightSpread}px`
+      );
+
+      // --- Declared animation budget: no infinite looping animations on cards.
+      const longRunningAnimations = await page.evaluate(() => {
+        const cards = Array.from(document.querySelectorAll('[data-testid="asset-card"]'));
+        let count = 0;
+        for (const card of cards) {
+          for (const element of [card, ...Array.from(card.querySelectorAll('*'))]) {
+            const style = window.getComputedStyle(element);
+            if (
+              style.animationName !== 'none' &&
+              style.animationIterationCount === 'infinite'
+            ) {
+              count += 1;
+              break;
+            }
+          }
+        }
+        return count;
+      });
+      record(
+        longRunningAnimations === 0,
+        `${label}: no infinite animations running inside asset cards`,
+        `cards=${longRunningAnimations}`
+      );
+
+      record(sink.pageErrors.length === 0, `${label}: no uncaught exceptions`, sink.pageErrors.join(' | '));
+      record(sink.consoleErrors.length === 0, `${label}: no console errors`, sink.consoleErrors.join(' | '));
+    } catch (error) {
+      record(false, `${label}: completed without throwing`, error.message);
+      await page
+        .screenshot({ path: path.join(OUT_DIR, `perf-failure-${viewport.name}.png`) })
+        .catch(() => undefined);
+    } finally {
+      await context.close();
+    }
+  }
+}
+
 async function main() {
   await mkdir(OUT_DIR, { recursive: true });
+
+  // Provision the server before any browser work so the harness can never fail
+  // with ECONNREFUSED, and guarantee teardown of anything it spawned.
+  const server = await ensureServer({ url: REQUESTED_URL, autoBuild: AUTO_BUILD });
+  BASE_URL = server.url;
+
   console.log(`Headless Chrome verification against ${BASE_URL} (suite: ${SUITE})`);
 
   const browser = await chromium.launch({
     channel: 'chrome',
     headless: true,
-    args: ['--disable-gpu', '--no-first-run', '--disable-background-networking'],
+    args: ['--no-first-run', '--disable-background-networking'],
   });
 
   const routes = [
@@ -1006,8 +1250,12 @@ async function main() {
     if (SUITE === 'hardening' || SUITE === 'all') {
       await runSuiteHardening(browser);
     }
+    if (SUITE === 'performance' || SUITE === 'all') {
+      await runSuitePerformance(browser);
+    }
   } finally {
     await browser.close();
+    await server.stop();
   }
 
   await writeFile(

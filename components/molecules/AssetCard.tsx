@@ -88,6 +88,7 @@ export function AssetCard({
         'group flex flex-col overflow-hidden rounded-glass border border-white/10 bg-slate-950/75',
         'shadow-[0_8px_32px_0_rgba(0,0,0,0.37)] transition-[border-color,transform] duration-300',
         'motion-safe:hover:-translate-y-1 motion-safe:hover:border-cyan-400/40',
+        'card-render-contain',
         className
       )}
       {...rest}

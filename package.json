@@ -10,6 +10,8 @@
     "typecheck": "tsc --noEmit",
     "verify": "node scripts/verify.mjs",
     "verify:responsive": "node scripts/verify.mjs --suite responsive",
+    "verify:performance": "node scripts/verify.mjs --suite performance",
+    "verify:all": "node scripts/verify.mjs --suite all",
     "verify:design-system": "node scripts/verify-design-system.mjs"
   },
   "dependencies": {
