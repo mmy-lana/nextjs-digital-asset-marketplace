@@ -7,7 +7,7 @@ import { GlassBadge } from '@/components/ui/GlassBadge';
 import { GlassButton } from '@/components/ui/GlassButton';
 import { STORAGE_KEYS } from '@/lib/constants';
 import { getAssetsByCreator, getCollectionsForCreator } from '@/lib/mock-data';
-import { getStorageItem, setStorageItem } from '@/lib/storage';
+import { getStorageItem, isStringArray, setStorageItem } from '@/lib/storage';
 import { cn, formatCryptoNumber, formatDate, formatFiat } from '@/lib/utils';
 import { ETH_USD_RATE } from '@/lib/mock-data';
 import type { CreatorProfile } from '@/types/marketplace';
@@ -27,7 +27,7 @@ export function CreatorHeader({ creator, className, ...rest }: CreatorHeaderProp
 
   // Storage reads happen post-mount to keep the server render deterministic.
   useEffect(() => {
-    const favorites = getStorageItem<string[]>(STORAGE_KEYS.favorites, []);
+    const favorites = getStorageItem<string[]>(STORAGE_KEYS.favorites, [], 'local', isStringArray);
     setIsFollowing(favorites.includes(creator.id));
   }, [creator.id]);
 

@@ -83,7 +83,7 @@ export function CollectionBrowser({
           className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4"
           data-testid="collection-grid"
         >
-          {members.map((asset) => (
+          {members.map((asset, index) => (
             <AssetCard
               key={asset.id}
               asset={asset}
@@ -91,6 +91,8 @@ export function CollectionBrowser({
               isAvailable={isAssetAvailable(asset.id) && asset.isAvailable}
               onQuickAdd={(target) => addToCart(target, target.license)}
               onInspect={(target) => router.push(`/asset/${target.slug}`)}
+              // UI-02: eager-load the first row of the collection grid.
+              priority={index < 4}
             />
           ))}
         </div>

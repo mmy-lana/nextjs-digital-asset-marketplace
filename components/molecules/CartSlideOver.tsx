@@ -160,7 +160,7 @@ export function CartSlideOver({
                             type="button"
                             onClick={() => updateQuantity(item.assetId, item.quantity - 1)}
                             aria-label={`Decrease quantity of ${item.asset.title}`}
-                            className="inline-flex size-9 items-center justify-center rounded-lg border border-white/10 text-slate-300 hover:bg-white/10"
+                            className="inline-flex size-11 items-center justify-center rounded-lg border border-white/10 text-slate-300 hover:bg-white/10 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-400"
                           >
                             <Minus aria-hidden="true" className="size-3.5" />
                           </button>
@@ -172,7 +172,7 @@ export function CartSlideOver({
                             onClick={() => updateQuantity(item.assetId, item.quantity + 1)}
                             disabled={item.quantity >= MAX_CART_QUANTITY}
                             aria-label={`Increase quantity of ${item.asset.title}`}
-                            className="inline-flex size-9 items-center justify-center rounded-lg border border-white/10 text-slate-300 hover:bg-white/10 disabled:opacity-40"
+                            className="inline-flex size-11 items-center justify-center rounded-lg border border-white/10 text-slate-300 hover:bg-white/10 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-400 disabled:cursor-not-allowed disabled:opacity-40"
                           >
                             <Plus aria-hidden="true" className="size-3.5" />
                           </button>
@@ -182,7 +182,7 @@ export function CartSlideOver({
                         type="button"
                         onClick={() => removeFromCart(item.assetId)}
                         aria-label={`Remove ${item.asset.title} from cart`}
-                        className="ml-auto inline-flex size-9 items-center justify-center rounded-lg text-slate-500 hover:bg-red-500/15 hover:text-red-300"
+                        className="ml-auto inline-flex size-11 items-center justify-center rounded-lg text-slate-500 hover:bg-red-500/15 hover:text-red-300 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-400"
                       >
                         <Trash2 aria-hidden="true" className="size-4" />
                       </button>

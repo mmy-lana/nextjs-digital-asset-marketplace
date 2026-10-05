@@ -25,6 +25,12 @@ export interface AssetCardProps {
   isAvailable: boolean;
   onQuickAdd: (asset: DigitalAsset) => void;
   onInspect: (asset: DigitalAsset) => void;
+  /**
+   * UI-02: eager-loads this card's preview. Should be set only for the first
+   * few above-the-fold cards so the Largest Contentful Paint element is fetched
+   * with the document instead of after hydration.
+   */
+  priority?: boolean;
   className?: string;
   'data-testid'?: string;
 }
@@ -52,6 +58,7 @@ export function AssetCard({
   isAvailable,
   onQuickAdd,
   onInspect,
+  priority = false,
   className,
   ...rest
 }: AssetCardProps) {
@@ -100,7 +107,8 @@ export function AssetCard({
             sizes="(max-width: 640px) 100vw, (max-width: 1024px) 50vw, (max-width: 1280px) 33vw, 25vw"
             className="object-cover transition-transform duration-500 motion-safe:group-hover:scale-105"
             onError={() => setImageFailed(true)}
-            priority={false}
+            priority={priority}
+            loading={priority ? undefined : 'lazy'}
           />
         )}
 

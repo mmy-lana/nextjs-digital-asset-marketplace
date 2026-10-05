@@ -14,6 +14,13 @@ import { SkeletonCard } from '@/components/ui/SkeletonCard';
 import { SORT_OPTIONS } from '@/lib/constants';
 import { useAssetFilter } from '@/hooks/useAssetFilter';
 import type { UseAssetFilterResult } from '@/hooks/useAssetFilter';
+
+/**
+ * Number of leading cards that preload their preview. Four covers a single
+ * row across the 2/3/4-column grid breakpoints without bloating the preload
+ * scanner on large viewports.
+ */
+const PRIORITY_CARD_COUNT = 4;
 import { useCart } from '@/context/CartContext';
 import { cn } from '@/lib/utils';
 import type { CollectionSummary, DigitalAsset, FilterState, SortOption } from '@/types/marketplace';
@@ -264,7 +271,7 @@ export function AssetExplorer({
               className="grid grid-cols-1 gap-5 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4"
               data-testid="asset-grid"
             >
-              {results.map((asset) => (
+              {results.map((asset, index) => (
                 <AssetCard
                   key={asset.id}
                   asset={asset}
@@ -272,6 +279,9 @@ export function AssetExplorer({
                   isAvailable={isAssetAvailable(asset.id) && asset.isAvailable}
                   onQuickAdd={handleQuickAdd}
                   onInspect={handleInspect}
+                  // UI-02: eager-load only the first row of results so the LCP
+                  // element ships with the document.
+                  priority={index < PRIORITY_CARD_COUNT}
                 />
               ))}
             </div>

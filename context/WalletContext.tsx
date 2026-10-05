@@ -15,19 +15,49 @@ import {
   CONNECT_HANDSHAKE_DELAY_MS,
   STORAGE_KEYS,
   WALLET_PROFILES,
+  WALLET_PROVIDERS,
   getWalletProvider,
 } from '@/lib/constants';
 import {
   ETH_USD_RATE,
   mockTransactions,
 } from '@/lib/mock-data';
-import { getStorageItem, setStorageItem, removeStorageItem } from '@/lib/storage';
+import {
+  arrayOfObjects,
+  getStorageItem,
+  objectWithKeys,
+  removeStorageItem,
+  setStorageItem,
+} from '@/lib/storage';
 import type {
   ChainNetwork,
   TransactionRecord,
   WalletProviderKind,
   WalletState,
 } from '@/types/marketplace';
+
+/**
+ * SEC-03: runtime validators applied at the storage boundary.
+ *
+ * Persisted payloads are untrusted. A hand-edited or schema-drifted entry is
+ * rejected and discarded here rather than being allowed to crash a component
+ * that assumes the full contract.
+ */
+const isWalletState = objectWithKeys<WalletState>([
+  ['address', 'string'],
+  ['chainId', 'number'],
+  ['balanceEth', 'number'],
+  ['balanceUsd', 'number'],
+  ['isConnected', 'boolean'],
+]);
+
+const isTransactionRecordArray = arrayOfObjects<TransactionRecord>([
+  ['id', 'string'],
+  ['txHash', 'string'],
+  ['assetId', 'string'],
+  ['amountCrypto', 'number'],
+  ['status', 'string'],
+]);
 
 /** Lifecycle of the simulated connector, mirroring a real injected provider. */
 export type WalletConnectionStatus =
@@ -193,22 +223,36 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
   // Hydration: every storage read happens inside an effect so the server render
   // never touches browser APIs.
   useEffect(() => {
-    const storedWallet = getStorageItem<WalletState | null>(STORAGE_KEYS.wallet, null);
+    const storedWallet = getStorageItem<WalletState | null>(
+      STORAGE_KEYS.wallet,
+      null,
+      'local',
+      (value): value is WalletState | null => value === null || isWalletState(value)
+    );
     if (storedWallet && typeof storedWallet.address === 'string') {
       const restored: WalletState = { ...INITIAL_WALLET, ...storedWallet };
       walletRef.current = restored;
       setWallet(restored);
       setActiveProvider(
-        getStorageItem<WalletProviderKind | null>(STORAGE_KEYS.walletProviderKind, null)
+        getStorageItem<WalletProviderKind | null>(
+          STORAGE_KEYS.walletProviderKind,
+          null,
+          'local',
+          (value): value is WalletProviderKind | null =>
+            value === null ||
+            (typeof value === 'string' && (WALLET_PROVIDERS as { kind: string }[]).some((p) => p.kind === value))
+        )
       );
       setStatus(storedWallet.isConnected ? 'CONNECTED' : 'DISCONNECTED');
     }
 
-    const storedTransactions = getStorageItem<TransactionRecord[] | null>(
+    const storedTransactions = getStorageItem<TransactionRecord[]>(
       STORAGE_KEYS.transactions,
-      null
+      [],
+      'local',
+      isTransactionRecordArray
     );
-    if (Array.isArray(storedTransactions) && storedTransactions.length > 0) {
+    if (storedTransactions.length > 0) {
       setTransactions(storedTransactions);
     }
 

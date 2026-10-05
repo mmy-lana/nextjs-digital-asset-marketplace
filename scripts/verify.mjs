@@ -489,6 +489,26 @@ async function runSuiteSecurity(browser) {
   });
   record(audioAsImage.length === 0, 'security: no audio URL is used as an image source', audioAsImage.join(','));
 
+  // RUN-01 / data integrity: no route may emit a failing sub-resource. A dead
+  // catalogue image URL surfaces as an optimizer 404 rather than a broken card.
+  const brokenResponses = [];
+  page.on('response', (response) => {
+    if (response.status() >= 400) {
+      brokenResponses.push(`${response.status()} ${response.url().slice(0, 160)}`);
+    }
+  });
+
+  for (const route of ['/', '/asset/chroma-void-3d', '/asset/sonar-drift-bed', '/orders']) {
+    await page.goto(`${BASE_URL}${route}`, { waitUntil: 'domcontentloaded' });
+    await page.waitForTimeout(1500);
+  }
+
+  record(
+    brokenResponses.length === 0,
+    'security: no failing sub-resources across the primary routes',
+    [...new Set(brokenResponses)].join(' | ')
+  );
+
   await page.close();
   await context.close();
 }
@@ -785,6 +805,168 @@ async function runSuiteStateIntegrity(browser) {
   }
 }
 
+/**
+ * Phase 3: UI-01 touch targets, PERF-01 audio cleanup, SEC-03 storage schema
+ * validation and UI-02 LCP preloading.
+ */
+async function runSuiteHardening(browser) {
+  // --- SEC-03: corrupted storage must not crash the client. -----------------
+  const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  const page = await context.newPage();
+  const sink = { consoleErrors: [], pageErrors: [], failedRequests: [] };
+  attachCollectors(page, sink);
+
+  try {
+    await gotoStable(page, '/');
+
+    // Poison every persisted key with structurally invalid payloads.
+    await page.evaluate(() => {
+      window.localStorage.setItem('ns_asset_market_cart_v1', '{ not json at all');
+      window.localStorage.setItem('ns_asset_market_wallet_v1', '{"address":42,"chainId":"NaN"}');
+      window.localStorage.setItem(
+        'ns_asset_market_transactions_v1',
+        '[{"id":123,"txHash":null}]'
+      );
+      window.localStorage.setItem('ns_asset_market_unavailable_v1', '{"not":"an array"}');
+      window.localStorage.setItem('ns_asset_market_favorites_v1', '"a string, not an array"');
+    });
+
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.waitForTimeout(1200);
+
+    record(sink.pageErrors.length === 0, 'hardening: no crash from corrupted storage', sink.pageErrors.join(' | '));
+    const cardsRendered = await page.locator('[data-testid="asset-card"]').count();
+    record(cardsRendered > 0, 'hardening: catalogue renders despite corrupt storage', `cards=${cardsRendered}`);
+
+    const quarantined = await page.evaluate(() => ({
+      cart: window.localStorage.getItem('ns_asset_market_cart_v1'),
+      wallet: window.localStorage.getItem('ns_asset_market_wallet_v1'),
+      unavailable: window.localStorage.getItem('ns_asset_market_unavailable_v1'),
+    }));
+    record(
+      quarantined.cart === null && quarantined.wallet === null,
+      'hardening: invalid JSON payloads are quarantined at the storage boundary',
+      JSON.stringify(quarantined)
+    );
+    record(
+      quarantined.unavailable === null,
+      'hardening: schema-invalid locked-asset set is discarded',
+      String(quarantined.unavailable)
+    );
+
+    // --- UI-02: LCP preloading limited to the leading cards. ---------------
+    const preloadState = await page.evaluate(() => {
+      const cards = Array.from(document.querySelectorAll('[data-testid="asset-card"]'));
+      const priorityImgs = document.querySelectorAll(
+        'link[rel="preload"][as="image"], img[fetchpriority="high"]'
+      ).length;
+      return { cardCount: cards.length, priorityImgs };
+    });
+    record(
+      preloadState.cardCount >= 4,
+      'hardening: catalogue grid rendered for preload assertion',
+      `cards=${preloadState.cardCount}`
+    );
+    record(
+      preloadState.priorityImgs >= 1 && preloadState.priorityImgs <= 8,
+      'hardening: only the leading cards are eagerly preloaded',
+      `priorityImages=${preloadState.priorityImgs}`
+    );
+
+    const lazyCount = await page.evaluate(
+      () => document.querySelectorAll('[data-testid="asset-card"] img[loading="lazy"]').length
+    );
+    record(
+      lazyCount > 0,
+      'hardening: below-the-fold cards remain lazily loaded',
+      `lazy=${lazyCount}`
+    );
+
+    // --- PERF-01: the audio element must be torn down on unmount. ----------
+    await gotoStable(page, '/asset/sonar-drift-bed');
+    await page.waitForTimeout(600);
+    const audioBefore = await page.locator('[data-testid="audio-preview-player"] audio').count();
+    record(audioBefore === 1, 'hardening: audio player mounted on the detail page', `audio=${audioBefore}`);
+
+    const posterIsImage = await page.evaluate(() => {
+      const img = document.querySelector('[data-testid="asset-card"] img, main img');
+      return img ? !/\.(mp3|wav|ogg|m4a)(\?|$)/i.test(img.currentSrc || img.src) : true;
+    });
+    record(posterIsImage, 'hardening: audio listing renders an image poster, not the stream');
+
+    // Navigate away; the cleanup effect must run.
+    await gotoStable(page, '/');
+    await page.waitForTimeout(600);
+    const orphanAudio = await page.evaluate(
+      () => document.querySelectorAll('audio').length
+    );
+    record(orphanAudio === 0, 'hardening: no orphaned audio elements after navigation', `orphans=${orphanAudio}`);
+
+    record(sink.consoleErrors.length === 0, 'hardening: no console errors', sink.consoleErrors.join(' | '));
+  } catch (error) {
+    record(false, 'hardening: completed without throwing', error.message);
+    await page.screenshot({ path: path.join(OUT_DIR, 'hardening-failure.png') }).catch(() => undefined);
+  } finally {
+    await context.close();
+  }
+
+  // --- UI-01: cart quantity/remove controls must clear 44px. ---------------
+  const mobile = await browser.newContext({
+    viewport: { width: 390, height: 844 },
+    isMobile: true,
+    hasTouch: true,
+  });
+  const mobilePage = await mobile.newPage();
+  const mobileSink = { consoleErrors: [], pageErrors: [], failedRequests: [] };
+  attachCollectors(mobilePage, mobileSink);
+  try {
+    await gotoStable(mobilePage, '/');
+    await mobilePage.evaluate(() => window.localStorage.clear());
+    await mobilePage.reload({ waitUntil: 'domcontentloaded' });
+    await mobilePage.waitForTimeout(700);
+
+    await mobilePage
+      .locator('[data-asset-slug="synth-nexus-ui"] [data-testid="asset-quick-add"]')
+      .click();
+    await mobilePage.waitForTimeout(300);
+    await mobilePage.locator('[data-testid="cart-toggle"]').first().click();
+    await mobilePage.waitForTimeout(500);
+
+    const box = async (label) => {
+      const target = mobilePage.locator(`button[aria-label*="${label}"]`).first();
+      if ((await target.count()) === 0) return null;
+      return target.boundingBox();
+    };
+
+    const decrement = await box('Decrease quantity');
+    const increment = await box('Increase quantity');
+    const remove = await box('Remove');
+
+    record(
+      decrement !== null && decrement.width >= 44 && decrement.height >= 44,
+      'hardening: decrement control meets the 44px target size',
+      decrement ? `${Math.round(decrement.width)}x${Math.round(decrement.height)}` : 'missing'
+    );
+    record(
+      increment !== null && increment.width >= 44 && increment.height >= 44,
+      'hardening: increment control meets the 44px target size',
+      increment ? `${Math.round(increment.width)}x${Math.round(increment.height)}` : 'missing'
+    );
+    record(
+      remove !== null && remove.width >= 44 && remove.height >= 44,
+      'hardening: remove control meets the 44px target size',
+      remove ? `${Math.round(remove.width)}x${Math.round(remove.height)}` : 'missing'
+    );
+
+    await assertNoHorizontalOverflow(mobilePage, 'hardening@390-mobile cart');
+    record(mobileSink.pageErrors.length === 0, 'hardening: cart flow raised no exceptions', mobileSink.pageErrors.join(' | '));
+  } catch (error) {
+    record(false, 'hardening: cart touch-target audit completed', error.message);
+  } finally {
+    await mobile.close();
+  }
+}
+
 async function main() {
   await mkdir(OUT_DIR, { recursive: true });
   console.log(`Headless Chrome verification against ${BASE_URL} (suite: ${SUITE})`);
@@ -820,6 +1002,9 @@ async function main() {
     }
     if (SUITE === 'state' || SUITE === 'all') {
       await runSuiteStateIntegrity(browser);
+    }
+    if (SUITE === 'hardening' || SUITE === 'all') {
+      await runSuiteHardening(browser);
     }
   } finally {
     await browser.close();

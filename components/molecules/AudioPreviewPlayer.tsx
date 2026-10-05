@@ -62,6 +62,25 @@ export function AudioPreviewPlayer({
     setCurrentTime(0);
   }, [src]);
 
+  /**
+   * PERF-01: release the media element on unmount and whenever the source
+   * changes.
+   *
+   * Without this, an in-flight download keeps decoding after the player is
+   * unmounted, retaining the buffered media and a live network connection, and
+   * audio can continue playing over a newly focused screen.
+   */
+  useEffect(() => {
+    const audio = audioRef.current;
+    return () => {
+      if (!audio) return;
+      audio.pause();
+      audio.removeAttribute('src');
+      // Force the media element to release buffered resources.
+      audio.load();
+    };
+  }, [src]);
+
   const togglePlay = useCallback(async () => {
     const audio = audioRef.current;
     if (!audio || hasError) return;

@@ -105,7 +105,7 @@ export const creators: CreatorProfile[] = [
     displayName: 'Sonar Dept.',
     handle: '@sonar_dept',
     avatarUrl: unsplash('1472099645785-5658abf4ff4e', 160),
-    bannerUrl: unsplash('1514320291840-2d0a9bf2a9ae', 1400),
+    bannerUrl: unsplash('1511379938547-c1f69419868d', 1400),
     bio: 'Sound department publishing stems, loops and modular kits cleared for commercial sync.',
     verified: true,
     totalSalesVolumeEth: 54.09,

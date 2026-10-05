@@ -18,8 +18,10 @@ import {
   getLicenseDescriptor,
 } from '@/lib/constants';
 import {
+  arrayOfObjects,
   deserializeIdSet,
   getStorageItem,
+  isStringArray,
   removeStorageItem,
   serializeIdSet,
   setStorageItem,
@@ -110,6 +112,19 @@ export function calculateCartTotals(items: CartItem[]): CartTotals {
 
 const INITIAL_CART: CartState = { items: [], ...EMPTY_TOTALS };
 
+/**
+ * SEC-03: a persisted cart line must carry at least the identity, pricing and
+ * licence fields the UI dereferences unconditionally. Anything else is
+ * discarded at the boundary rather than reaching a component that would throw.
+ */
+const isCartItemArray = arrayOfObjects<CartItem>([
+  ['assetId', 'string'],
+  ['selectedLicense', 'string'],
+  ['quantity', 'number'],
+  ['priceCrypto', 'number'],
+  ['priceFiatUsd', 'number'],
+]);
+
 const CartContext = createContext<CartContextValue | undefined>(undefined);
 
 export function CartProvider({ children }: { children: React.ReactNode }) {
@@ -128,14 +143,16 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
 
   // Hydration — storage is only touched inside the effect.
   useEffect(() => {
-    const storedItems = getStorageItem<CartItem[] | null>(STORAGE_KEYS.cart, null);
-    if (Array.isArray(storedItems)) {
+    const storedItems = getStorageItem<CartItem[]>(STORAGE_KEYS.cart, [], 'local', isCartItemArray);
+    if (storedItems.length > 0) {
       itemsRef.current = storedItems;
       setItems(storedItems);
     }
     // A Set collapses to `{}` under JSON.stringify, so it is stored as string[].
     setUnavailableAssetIds(
-      deserializeIdSet(getStorageItem<unknown>(STORAGE_KEYS.unavailableAssets, []))
+      deserializeIdSet(
+        getStorageItem<unknown>(STORAGE_KEYS.unavailableAssets, [], 'local', isStringArray)
+      )
     );
     hydrated.current = true;
   }, []);
